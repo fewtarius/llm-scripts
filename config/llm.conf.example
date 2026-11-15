@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: CC-BY-NC-SA-4.0
+# llm-scripts user configuration.
+# Copy to ~/.config/llm-scripts/config.env.
+# Command-line flags win over these values; these win over solver defaults.
+
+# Engine and backend
+#LLM_ENGINE=llama.cpp
+#LLM_BACKEND=auto
+
+# Model store
+#LLM_MODEL_DIR=/home/deck/models
+
+# Server
+#LLM_HOST=127.0.0.1
+#LLM_PORT=9090
+#LLM_SESSIONS=1
+
+# Memory
+#LLM_CTX=0
+#LLM_KV_CACHE=f16
+#LLM_CACHE_RAM=off
+#LLM_BIAS=mtp
+
+# Speculative decoding
+#LLM_SPEC=auto
+#LLM_DRAFT_TOKENS=2
+
+# gufo Laguna attention
+#LLM_SPARSE_ATTN=auto
+
+# Performance escape hatches
+#LLM_SKIP_GPU_PERF=1
+#LLM_SKIP_UNIFIED_HEAP=1
+#LLM_DEVICE_SETTLE_SECONDS=120

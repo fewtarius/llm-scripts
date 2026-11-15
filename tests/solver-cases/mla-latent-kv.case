@@ -1,0 +1,22 @@
+# MLA / collapsed-KV architecture (head_count_kv = 1). The latent projection
+# makes per-token KV far cheaper, so the archetype table should select the
+# heavy ubatch 4096 / batch 8192 row rather than the dense defaults.
+CASE_DESC="MLA model (head_count_kv=1): latent-attention batch/ubatch row"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "deepseek2",
+  "general.name": "DeepSeek-V2-Lite",
+  "deepseek2.block_count": 43,
+  "deepseek2.embedding_length": 2048,
+  "deepseek2.feed_forward_length": 10944,
+  "deepseek2.attention.head_count": 16,
+  "deepseek2.attention.head_count_kv": 1,
+  "deepseek2.attention.key_length": 192,
+  "deepseek2.attention.value_length": 128
+}'
+MODEL_BYTES=$(( 24 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=true is_ssm=false is_mtp=false

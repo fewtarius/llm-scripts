@@ -1,0 +1,24 @@
+# Pure SSM / recurrent architecture. Archetype table pins ubatch 1024 /
+# batch 4096; recurrence state, not KV, dominates its memory.
+CASE_DESC="SSM hybrid: recurrent archetype, not the dense row"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "mamba2",
+  "general.name": "Mamba2-2.7B",
+  "mamba2.block_count": 64,
+  "mamba2.embedding_length": 2560,
+  "mamba2.ssm.d_state": 128,
+  "mamba2.ssm.d_conv": 4,
+  "mamba2.ssm.inner_size": 5120,
+  "mamba2.ssm.group_count": 1,
+  "mamba2.attention.head_count": 20,
+  "mamba2.attention.head_count_kv": 1,
+  "mamba2.attention.key_length": 128,
+  "mamba2.attention.value_length": 128
+}'
+MODEL_BYTES=$(( 5 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=true is_mtp=false

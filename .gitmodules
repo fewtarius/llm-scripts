@@ -1,0 +1,8 @@
+[submodule "gufo"]
+	path = gufo
+	url = git@github.com:fewtarius/gufo.git
+	branch = stable
+[submodule "llama.cpp"]
+	path = llama.cpp
+	url = git@github.com:SyntheticAutonomicMind/llama.cpp.git
+	branch = stable

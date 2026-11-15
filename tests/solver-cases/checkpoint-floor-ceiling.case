@@ -1,0 +1,30 @@
+# With checkpoints scaled for a 131072 ctx window, the scale function
+# produces ceil((131072-65536)/8192)+2 = 8 checkpoints, giving min_step =
+# 131072/8 = 16384 — NOT clamped up to 32768. Before the floor/ceiling
+# fix, the backwards `[[ -lt 32768 ]] && =32768` inflated this to 32768,
+# double-counting checkpoint storage in the memory budget and falsely
+# rejecting 128K contexts that actually fit.
+#
+# Uses the "checkpoints" bias, which does not set SOLVER_CHECKPOINTS_OVERRIDE,
+# so _opt_scale_checkpoints runs and exercises the floor/ceiling path.
+CASE_DESC="131072 ctx, checkpoints bias: min_step=16384, not inflated to 32768"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen2",
+  "general.name": "Qwen2-7B-131K",
+  "qwen2.block_count": 32,
+  "qwen2.embedding_length": 4096,
+  "qwen2.feed_forward_length": 11008,
+  "qwen2.attention.head_count": 32,
+  "qwen2.attention.head_count_kv": 32,
+  "qwen2.attention.key_length": 128,
+  "qwen2.attention.value_length": 128,
+  "qwen2.context_length": 131072
+}'
+LLM_BIAS=checkpoints
+MODEL_BYTES=$(( 8 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=false is_mtp=false

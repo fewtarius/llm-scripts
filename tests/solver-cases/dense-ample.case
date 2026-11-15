@@ -1,0 +1,21 @@
+# Dense model with a GPU budget far larger than the weights. The optimistic
+# path should win: native context, q8_0 KV, no CPU offload, no draft.
+CASE_DESC="Dense 32B, 128 GiB budget: optimistic profile, no detune"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen2",
+  "general.name": "Qwen2-32B",
+  "qwen2.block_count": 64,
+  "qwen2.embedding_length": 5120,
+  "qwen2.feed_forward_length": 27648,
+  "qwen2.attention.head_count": 40,
+  "qwen2.attention.head_count_kv": 8,
+  "qwen2.attention.key_length": 128,
+  "qwen2.attention.value_length": 128
+}'
+MODEL_BYTES=$(( 35 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 128 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=false is_mtp=false

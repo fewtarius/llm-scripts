@@ -1,0 +1,632 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 fewtarius
+# llm - one entry point for every engine in this tree.
+set -euo pipefail
+
+LLM_SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+LLM_ROOT="$(cd "$(dirname "$LLM_SELF")" && pwd)"
+export LLM_ROOT
+
+# shellcheck source=lib/common.sh
+source "$LLM_ROOT/lib/common.sh"
+# shellcheck source=lib/profile.sh
+source "$LLM_ROOT/lib/profile.sh"
+# shellcheck source=lib/models.sh
+source "$LLM_ROOT/lib/models.sh"
+# shellcheck source=lib/process.sh
+source "$LLM_ROOT/lib/process.sh"
+# shellcheck source=lib/validate.sh
+source "$LLM_ROOT/lib/validate.sh"
+# shellcheck source=lib/env.sh
+source "$LLM_ROOT/lib/env.sh"
+# shellcheck source=lib/download.sh
+source "$LLM_ROOT/lib/download.sh"
+# shellcheck source=lib/engines/llama.sh
+source "$LLM_ROOT/lib/engines/llama.sh"
+# shellcheck source=lib/engines/gufo.sh
+source "$LLM_ROOT/lib/engines/gufo.sh"
+
+
+usage() {
+    cat <<USAGE
+${BLUE}llm${NC} - run GGUF models on llama.cpp or gufo with a solved profile.
+
+${YELLOW}Usage:${NC}
+    llm [serve] [options] MODEL
+    llm profile [options] MODEL [--json] [--save]
+    llm models
+    llm pull MODEL[:QUANT]
+    llm build [--engine llama.cpp|gufo|all] [--backend auto|vulkan|rocm|both|metal]
+              [--rebuild|--clean|--sdk-only] [--print-command]
+    llm doctor
+    llm tune [GB]
+    llm env [--engine ENGINE] [--backend BACKEND]
+    llm metrics [--port N] [--raw]
+
+${YELLOW}Engine and hardware:${NC}
+    --engine NAME        gufo (default) or llama.cpp
+    -b, --backend NAME   auto, vulkan, rocm, metal, cpu
+    -m, --model NAME     Model name, substring, or path (positional also works)
+    -a, --alias NAME     API model alias (llama.cpp)
+    -t, --threads N      CPU threads
+    --ngl N              GPU layers
+    --fit                Let llama-server auto-fit layers
+
+${YELLOW}Memory and context:${NC}
+    -c, --ctx N          Context tokens (0 = model native for gufo, solver minimum for llama.cpp)
+    -j, --sessions N     Concurrent sessions
+    --kv-cache TYPE      f16, q8_0, q4_0 (engine support varies)
+    --cache-type-k TYPE  llama.cpp K override
+    --cache-type-v TYPE  llama.cpp V override
+    --cache-ram VALUE    off, 0, or MiB
+    --cache-disk DIR     gufo restart-safe continuation cache
+    --ubatch-size N      Override ubatch
+    --bias NAME          context (default), mtp, quality, speed
+
+${YELLOW}Speculative:${NC}
+    --spec MODE          off, auto, dflash2, mtp, dspark
+    --draft-tokens N     Draft tokens per step
+
+${YELLOW}Attention:${NC}
+    --sparse-attn MODE   auto, on, off (gufo Laguna)
+
+${YELLOW}Server:${NC}
+    --host IP            Bind address (default 127.0.0.1)
+    --port N             Listen port (default 9090)
+    --reasoning MODE     on, off, auto
+    --reasoning-budget N Thinking token budget
+    --no-reasoning-budget  Same as --reasoning-budget 0
+    --extra-args "..."   Appended verbatim to the engine command
+    --list-models        List models and exit (same as: llm models)
+    --print-command      Print the resolved command and exit
+    --json               Machine-readable profile (profile command)
+    --save               Save the resolved profile as a per-model pin
+    --quiet              Suppress the profile summary
+
+${YELLOW}Environment:${NC}
+    LLM_* variables are read from ${LLM_CONFIG}. LLM_MODEL, LLM_ENGINE,
+    LLM_HOST and LLM_PORT may be set in the environment, so a service unit
+    can name the model without a command line.
+    Command-line flags win over the environment, which wins over the file.
+
+${YELLOW}Examples:${NC}
+    llm serve --engine gufo --model Laguna-S-2.1-UD-Q4_K_XL --kv-cache q8_0
+    llm profile Qwen3.6-35B-A3B-UD-Q4_K_XL --json
+    llm build --engine gufo
+USAGE
+}
+
+die_usage() { log_error "$1"; usage >&2; exit 2; }
+
+# option_value <flag> [value...]: fail with a usage error instead of letting
+# an unterminated option trip `set -u`.
+option_value() {
+    if (( $# < 2 )) || [[ -z "${2-}" ]]; then
+        log_error "Option $1 needs a value"
+        exit 2
+    fi
+}
+
+_export_if_set() {
+    local v
+    for v in "$@"; do
+        if [[ -n "${!v+set}" ]]; then export "${v?}"; fi
+    done
+}
+
+parse_options() {
+    # LLM_MODEL may already be set by the environment or the config file; the
+    # systemd unit relies on that. Only a command-line model overrides it.
+    LLM_MODEL="${LLM_MODEL:-}"
+    LLM_JSON=0
+    LLM_QUIET=0
+    LLM_PRINT_COMMAND=0
+    LLM_SAVE_PIN=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --engine) option_value "$1" "${2-}"; LLM_ENGINE="$2"; shift 2 ;;
+            -b|--backend) option_value "$1" "${2-}"; LLM_BACKEND="$2"; shift 2 ;;
+            -m|--model) option_value "$1" "${2-}"; LLM_MODEL="$2"; shift 2 ;;
+            -a|--alias) option_value "$1" "${2-}"; LLM_ALIAS="$2"; shift 2 ;;
+            -t|--threads) option_value "$1" "${2-}"; LLM_THREADS="$2"; shift 2 ;;
+            --ngl|--gpu-layers) option_value "$1" "${2-}"; LLM_NGL="$2"; shift 2 ;;
+            --fit) LLM_FIT="on"; shift ;;
+            -c|--ctx|--ctx-size) option_value "$1" "${2-}"; LLM_CTX="$2"; shift 2 ;;
+            -j|--sessions|-np) option_value "$1" "${2-}"; LLM_SESSIONS="$2"; shift 2 ;;
+            --kv-cache|--kv-cache-type) option_value "$1" "${2-}"; LLM_KV_CACHE="$2"; shift 2 ;;
+            --cache-type-k) option_value "$1" "${2-}"; LLM_CACHE_TYPE_K="$2"; shift 2 ;;
+            --cache-type-v) option_value "$1" "${2-}"; LLM_CACHE_TYPE_V="$2"; shift 2 ;;
+            --cache-ram) option_value "$1" "${2-}"; LLM_CACHE_RAM="$2"; shift 2 ;;
+            --cache-disk) option_value "$1" "${2-}"; LLM_CACHE_DISK="$2"; shift 2 ;;
+            --ubatch-size|--ubatch) option_value "$1" "${2-}"; LLM_UBATCH="$2"; shift 2 ;;
+            --bias) option_value "$1" "${2-}"; LLM_BIAS="$2"; shift 2 ;;
+            --spec) option_value "$1" "${2-}"; LLM_SPEC="$2"; shift 2 ;;
+            --draft-tokens) option_value "$1" "${2-}"; LLM_DRAFT_TOKENS="$2"; shift 2 ;;
+            --sparse-attn) option_value "$1" "${2-}"; LLM_SPARSE_ATTN="$2"; shift 2 ;;
+            --host) option_value "$1" "${2-}"; LLM_HOST="$2"; shift 2 ;;
+            --port) option_value "$1" "${2-}"; LLM_PORT="$2"; shift 2 ;;
+            --reasoning) option_value "$1" "${2-}"; LLM_REASONING="$2"; shift 2 ;;
+            --reasoning-budget) option_value "$1" "${2-}"; LLM_REASONING_BUDGET="$2"; shift 2 ;;
+            --no-reasoning-budget) LLM_REASONING_BUDGET=0; shift ;;
+            --extra-args) option_value "$1" "${2-}"; LLM_EXTRA_ARGS="$2"; shift 2 ;;
+            --json) LLM_JSON=1; shift ;;
+            --quiet) LLM_QUIET=1; shift ;;
+            --print-command|--dry-run) LLM_PRINT_COMMAND=1; shift ;;
+            --save) LLM_SAVE_PIN=1; shift ;;
+            --list-models) llm_list_models; exit 0 ;;
+            -h|--help) usage; exit 0 ;;
+            --) shift; while [[ $# -gt 0 ]]; do
+                    [[ -z "$LLM_MODEL" ]] && LLM_MODEL="$1" || die_usage "Unexpected argument: $1"
+                    shift
+                done ;;
+            -*) die_usage "Unknown option: $1" ;;
+            *) [[ -z "$LLM_MODEL" ]] && LLM_MODEL="$1" || die_usage "Unexpected argument: $1"; shift ;;
+        esac
+    done
+    _export_if_set LLM_ENGINE LLM_BACKEND LLM_ALIAS LLM_THREADS LLM_NGL LLM_FIT \
+        LLM_CTX LLM_SESSIONS LLM_KV_CACHE LLM_CACHE_TYPE_K LLM_CACHE_TYPE_V \
+        LLM_CACHE_RAM LLM_CACHE_DISK LLM_UBATCH LLM_BIAS LLM_SPEC LLM_DRAFT_TOKENS \
+        LLM_SPARSE_ATTN LLM_HOST LLM_PORT LLM_REASONING LLM_REASONING_BUDGET LLM_EXTRA_ARGS
+}
+
+resolve_engine() {
+    case "${LLM_ENGINE:-gufo}" in
+        llama|llama.cpp|llamacpp) LLM_ENGINE="llama.cpp" ;;
+        gufo) LLM_ENGINE="gufo" ;;
+        *) log_error "Unknown engine: $LLM_ENGINE (use llama.cpp or gufo)"; exit 2 ;;
+    esac
+}
+
+engine_solve() {
+    local model="$1"
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then engine_solve_gufo "$model"; else engine_solve_llama "$model"; fi
+}
+
+engine_render() {
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then engine_render_gufo; else engine_render_llama; fi
+}
+
+engine_env() {
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then engine_env_gufo; else engine_env_llama; fi
+}
+
+engine_binary() {
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then gufo_binary; else llama_binary server; fi
+}
+
+engine_ready_regex() {
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then engine_ready_regex_gufo; else engine_ready_regex_llama; fi
+}
+
+engine_comm() {
+    if [[ "$LLM_ENGINE" == "gufo" ]]; then printf 'gufo'; else printf 'llama-server'; fi
+}
+
+need_model() {
+    if [[ -z "${LLM_MODEL:-}" ]]; then
+        log_error "No model given."
+        echo "  llm models                 list what is available" >&2
+        echo "  llm serve MODEL            serve by name, substring, or path" >&2
+        echo "  llm --help                 every option" >&2
+        exit 2
+    fi
+    MODEL=$(llm_resolve_model "$LLM_MODEL") || exit 1
+    LLM_MODEL="$MODEL"
+}
+
+build_profile() {
+    need_model
+    llm_load_pin "$LLM_MODEL" || true
+    resolve_engine
+    validate_settings "$LLM_ENGINE"
+    profile_reset
+    engine_solve "$LLM_MODEL" || exit 1
+    engine_render || exit 1
+}
+
+print_command() {
+    local bin
+    bin=$(engine_binary)
+    printf '%s' "$bin"
+    local a
+    for a in "${PROFILE_ARGS[@]}"; do printf ' %q' "$a"; done
+    printf '\n'
+}
+
+# The plan is not complete without the environment. gufo selects its KV
+# format through LAGUNA_KV_CACHE_TYPE rather than an argument, so a printed
+# command without it does not reproduce the run.
+print_env() {
+    (( ${#PROFILE_ENV[@]} )) || return 0
+    echo ""
+    echo "Environment:"
+    local e
+    for e in "${PROFILE_ENV[@]}"; do printf '  %s\n' "$e"; done
+}
+
+cmd_profile() {
+    build_profile
+    # Collect the environment for the profile without touching system state.
+    LLM_SKIP_GPU_PERF=1 engine_env || true
+    if (( LLM_SAVE_PIN )); then
+        llm_save_pin "$LLM_MODEL" || exit 1
+    fi
+    if (( LLM_JSON )); then
+        profile_emit_json
+    else
+        echo ""
+        profile_emit_text
+        echo ""
+        echo "Command:"
+        printf '  '; print_command
+        print_env
+        echo ""
+    fi
+}
+
+cmd_serve() {
+    (( LLM_PRINT_COMMAND )) && { LLM_DRY_RUN=1; export LLM_DRY_RUN; }
+
+    build_profile
+    local bin
+    bin=$(engine_binary)
+    local -a argv=("$bin" "${PROFILE_ARGS[@]}")
+    # Only the printing path needs the environment; a real run collects it
+    # further down, after the device is settled.
+    (( LLM_PRINT_COMMAND )) && { LLM_SKIP_GPU_PERF=1 engine_env || true; }
+
+    if (( LLM_QUIET == 0 )); then
+        echo ""
+        profile_emit_text
+        echo ""
+        echo "Command:"
+        printf '  '; print_command
+        print_env
+        echo ""
+    fi
+    (( LLM_PRINT_COMMAND )) && exit 0
+
+    if [[ -z "${LLM_DEVICE_SETTLE_SECONDS+x}" ]]; then
+        if [[ "$LLM_ENGINE" == "gufo" ]]; then LLM_DEVICE_SETTLE_SECONDS=120; else LLM_DEVICE_SETTLE_SECONDS=0; fi
+    fi
+    export LLM_DEVICE_SETTLE_SECONDS
+
+    local state
+    state=$(llm_state_dir)
+    local marker="$state/last_exit"
+    local log_file="$state/run.log"
+
+    llm_assert_gpu_exclusive "$(engine_comm)" || exit 1
+    llm_stop_on_port "$PROFILE_PORT" "$(engine_comm)"
+    llm_wait_device_settle "$marker"
+
+    engine_env
+    log_info "Launching $PROFILE_ENGINE: $PROFILE_MODEL_NAME on $PROFILE_HOST:$PROFILE_PORT"
+    llm_supervise "$(engine_ready_regex)" "$log_file" "$marker" "${argv[@]}"
+}
+
+cmd_models() { llm_list_models; }
+
+cmd_pull() {
+    if (( $# == 0 )) || [[ -z "${1-}" ]]; then
+        log_error "No repository given."
+        echo "  llm pull REPO[:QUANT]           e.g. unsloth/Qwen3-14B-GGUF:Q4_K_M" >&2
+        echo "  llm pull SEARCH                 searches HuggingFace for a GGUF repo" >&2
+        exit 2
+    fi
+    local spec="$1"
+    shift || true
+    local quant="Q4_K_M"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quant|-q) option_value "$1" "${2-}"; quant="$2"; shift 2 ;;
+            *) log_error "Unknown pull option: $1"; exit 2 ;;
+        esac
+    done
+    download_model "$spec" "$quant"
+}
+
+# cmd_build - translate engine selection into build.sh arguments.
+#
+# scripts/build.sh speaks in backends and has a single --gufo switch. The
+# dispatcher speaks in engines, because that is what the user picks when
+# serving. This is the only place that translates between the two.
+cmd_build() {
+    local engine="${LLM_ENGINE:-llama.cpp}"
+    local backend=""
+    local plan_only=0
+    local raw=()
+    local -a llama_args=()
+    local want_llama=0 want_gufo=0 sdk_only=0 clean=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --engine) engine="${2:-}"; shift 2 ;;
+            --engine=*) engine="${1#*=}"; shift ;;
+            -b|--backend) backend="${2:-}"; shift 2 ;;
+            --backend=*) backend="${1#*=}"; shift ;;
+            --sdk-only) sdk_only=1; shift ;;
+            --rebuild|--clean) clean=1; raw+=("$1"); shift ;;
+            --rocm|--vulkan|--metal|--both|--gufo) raw+=("$1"); shift ;;
+            --print-command|--dry-run) plan_only=1; shift ;;
+            -h|--help) exec "$LLM_ROOT/scripts/build.sh" --help ;;
+            *)
+                log_error "Unknown build option: $1"
+                echo "  llm build [--engine llama.cpp|gufo|all] [--backend auto|vulkan|rocm|both|metal]" >&2
+                echo "  llm build --rebuild | --clean | --sdk-only | --print-command" >&2
+                exit 2
+                ;;
+        esac
+    done
+
+    # Explicit backend switches bypass engine translation: the user is already
+    # speaking build.sh's language.
+    if (( ${#raw[@]} )) && [[ " ${raw[*]} " == *" --gufo "* ]]; then
+        want_gufo=1
+        local a
+        for a in "${raw[@]}"; do [[ "$a" == "--gufo" ]] || llama_args+=("$a"); done
+        [[ " ${llama_args[*]} " =~ --(rocm|vulkan|metal|both) ]] && want_llama=1
+    elif (( ${#raw[@]} )) && [[ " ${raw[*]} " =~ --(rocm|vulkan|metal|both) ]]; then
+        want_llama=1
+        llama_args=("${raw[@]}")
+    else
+        llama_args=("${raw[@]}")
+        case "$engine" in
+            gufo)           want_gufo=1 ;;
+            llama|llama.cpp|llamacpp) want_llama=1 ;;
+            all|both)       want_llama=1; want_gufo=1 ;;
+            *)
+                log_error "Unknown engine: $engine (use llama.cpp, gufo, or all)"
+                exit 2
+                ;;
+        esac
+        case "$backend" in
+            ""|auto) ;;
+            vulkan)  llama_args+=(--vulkan) ;;
+            rocm)    llama_args+=(--rocm) ;;
+            both)    llama_args+=(--both) ;;
+            metal)   llama_args+=(--metal) ;;
+            cpu)
+                log_error "There is no CPU-only llama.cpp build here; llama-vulkan runs on CPU too."
+                log_error "Drop --backend cpu, or use --backend vulkan."
+                exit 2
+                ;;
+            *)
+                log_error "Unknown backend: $backend (use auto, vulkan, rocm, both, or metal)"
+                exit 2
+                ;;
+        esac
+    fi
+
+    if (( sdk_only )); then
+        want_llama=1
+        want_gufo=0
+        llama_args+=(--sdk-only)
+    fi
+
+    local gufo_args=()
+    (( clean )) && gufo_args+=(--clean)
+
+    if (( plan_only )); then
+        (( want_llama )) && { printf '%s' "$LLM_ROOT/scripts/build.sh"; (( ${#llama_args[@]} )) && printf ' %q' "${llama_args[@]}"; printf '\n'; }
+        (( want_gufo ))  && { printf '%s' "$LLM_ROOT/scripts/build/gufo.sh"; (( ${#gufo_args[@]} )) && printf ' %q' "${gufo_args[@]}"; printf '\n'; }
+        return 0
+    fi
+
+    local rc=0
+    if (( want_llama )); then
+        "$LLM_ROOT/scripts/build.sh" "${llama_args[@]}" || rc=$?
+    fi
+    if (( rc == 0 && want_gufo )); then
+        "$LLM_ROOT/scripts/build/gufo.sh" "${gufo_args[@]}" || rc=$?
+    fi
+    llm_env_write_wrappers
+    return "$rc"
+}
+cmd_tune() {
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --print-command|--dry-run) trap - EXIT; printf '%s' "sudo $LLM_ROOT/scripts/apply-ttm-kernel-params.sh"; (( $# > 1 )) && printf ' %q' "${@:2}"; printf '\n'; return 0 ;;
+            -h|--help) exec "$LLM_ROOT/scripts/apply-ttm-kernel-params.sh" --help ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    exec sudo "$LLM_ROOT/scripts/apply-ttm-kernel-params.sh" "${args[@]}"
+}
+
+# engine_build_state <engine>
+#   Prints "built|missing" and, when built, the binary path.
+engine_build_state() {
+    local engine="$1" bin state
+    if [[ "$engine" == "gufo" ]]; then
+        PROFILE_BACKEND=rocm
+        bin=$(gufo_binary)
+    else
+        PROFILE_BACKEND=$(llama_resolve_backend)
+        bin=$(llama_binary server)
+    fi
+    if [[ -x "$bin" ]]; then state=built; else state=missing; fi
+    printf '%s\t%s\t%s\n' "$state" "$PROFILE_BACKEND" "$bin"
+}
+
+cmd_home() {
+    local model_count engine state backend bin pool
+    model_count=$(llm_model_entries | wc -l)
+    pool=$(awk -v b="$(gpu_budget_bytes)" 'BEGIN{ printf "%.0f", b/1073741824 }')
+
+    printf '\n%bllm-scripts%b  %s\n\n' "$BLUE" "$NC" "$LLM_ROOT"
+    printf '  %-9s %s (%s), %s GiB usable GPU memory\n' "gpu:" \
+        "${GPU_NAME:-unknown}" "${GPU_GFX_ARCH:-unknown}" "$pool"
+    printf '  %-9s %s GiB RAM, %s cpu, %s threads\n' "system:" \
+        "${SYS_RAM_GB:-0}" "${SYS_CPU_ISA:-unknown}" "${SYS_THREADS:-?}"
+
+    local saved_engine="${LLM_ENGINE:-llama.cpp}" saved_backend="${LLM_BACKEND:-auto}" first=1
+    for engine in llama.cpp gufo; do
+        LLM_ENGINE="$engine"
+        IFS=$'\t' read -r state backend bin < <(engine_build_state "$engine")
+        if (( first )); then
+            printf '  %-9s ' "engines:"
+            first=0
+        else
+            printf '  %-9s ' ""
+        fi
+        if [[ "$state" == "built" ]]; then
+            printf '%-10s %bbuilt%b  (%s)\n' "$engine" "$GREEN" "$NC" "$backend"
+        else
+            printf '%-10s not built  (./llm build --engine %s)\n' "$engine" "$engine"
+        fi
+    done
+    LLM_ENGINE="$saved_engine"; LLM_BACKEND="$saved_backend"
+
+    printf '  %-9s %s in %s\n' "models:" "$model_count" "$LLM_MODEL_DIR"
+    [[ -f "$LLM_CONFIG" ]] \
+        && printf '  %-9s %s\n' "config:" "$LLM_CONFIG" \
+        || printf '  %-9s none (%s)\n' "config:" "config/llm.conf.example"
+
+    cat <<'HOME'
+
+Commands
+  llm serve MODEL [options]      solve a profile and run the server
+  llm profile MODEL [--json]     show the resolved profile and exact command
+  llm models                     list models
+  llm pull REPO[:QUANT]          download from HuggingFace
+  llm build [--engine NAME]      build llama.cpp and/or gufo
+  llm doctor                     full detection and build report
+  llm --help                     every option
+
+HOME
+    [[ "$model_count" == "0" ]] \
+        && printf 'No models yet: put a GGUF in %s or run ./llm pull REPO:QUANT\n\n' "$LLM_MODEL_DIR"
+    return 0
+}
+
+cmd_doctor() {
+    echo ""
+    echo "llm-scripts doctor"
+    echo "  root:        $LLM_ROOT"
+    echo "  config:      $LLM_CONFIG $([[ -f $LLM_CONFIG ]] && echo '(present)' || echo '(absent)')"
+    echo "  model dir:   $LLM_MODEL_DIR"
+    echo "  state dir:   $LLM_STATE_DIR"
+    echo ""
+    echo "  platform:    ${SYS_PLATFORM:-unknown}"
+    echo "  gpu:         ${GPU_NAME:-unknown} (${GPU_GFX_ARCH:-unknown})"
+    echo "  gfx version: ${GPU_GFX_VERSION:-unknown}"
+    local budget_bytes reported_gib budget_gib
+    budget_bytes=$(gpu_budget_bytes)
+    budget_gib=$(awk -v b="$budget_bytes" 'BEGIN{ printf "%.1f", b/1073741824 }')
+    reported_gib=$(gpu_reported_pool_gib)
+    echo "  gpu pool:    ${reported_gib} GiB reported (VRAM+GTT)"
+    echo "  gpu budget:  ${budget_gib} GiB usable by the solver"
+    echo "  system ram:  ${SYS_RAM_GB:-0} GiB"
+    echo "  cpu isa:     ${SYS_CPU_ISA:-unknown}"
+    echo "  thread cap:  ${SYS_THREADS:-unknown}"
+    echo ""
+    local e bin backend
+    for e in llama.cpp gufo; do
+        LLM_ENGINE="$e"; resolve_engine
+        if [[ "$e" == "gufo" ]]; then
+            PROFILE_BACKEND=rocm; bin=$(gufo_binary)
+        else
+            LLM_BACKEND="${LLM_BACKEND:-auto}"; PROFILE_BACKEND=$(llama_resolve_backend); bin=$(llama_binary server)
+        fi
+        if [[ -x "$bin" ]]; then
+            echo "  $e: built ($bin)"
+        else
+            echo "  $e: not built ($bin)"
+        fi
+    done
+    echo ""
+    echo "  model count: $(llm_model_entries | wc -l)"
+    echo "  drirc:       $([[ -f $HOME/.drirc ]] && grep -q radv_enable_unified_heap_on_apu "$HOME/.drirc" && echo 'unified heap enabled' || echo 'not configured')"
+    echo "  profile:     $(cat /sys/firmware/acpi/platform_profile 2>/dev/null || echo 'not exposed')"
+    echo ""
+}
+
+cmd_env() {
+    local engine="llama.cpp" backend="vulkan"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --engine) option_value "$1" "${2-}"; engine="$2"; shift 2 ;;
+            --backend) option_value "$1" "${2-}"; backend="$2"; shift 2 ;;
+            *) log_error "Unknown env option: $1"; exit 2 ;;
+        esac
+    done
+    LLM_ENGINE="$engine"
+    PROFILE_BACKEND="$backend"
+    validate_settings "$engine" || exit 2
+    if [[ "$engine" == "gufo" ]]; then backend="rocm"; fi
+    llm_env_activate "$backend"
+    local v
+    for v in ROCM_PATH HIP_PATH HSA_OVERRIDE_GFX_VERSION LD_LIBRARY_PATH RADV_PERFTEST \
+             GGML_VK_MAX_MB_PER_SUBMIT GGML_VK_NODES_PER_SUBMIT GGML_VK_FA_WAVE32 \
+             MESA_SHADER_CACHE_DIR; do
+        if [[ -n "${!v:-}" ]]; then
+            printf 'export %s=%q\n' "$v" "${!v}"
+        fi
+    done
+    return 0
+}
+
+cmd_exec() {
+    if (( $# == 0 )); then
+        log_error "_exec needs an engine"
+        exit 2
+    fi
+    local engine="$1" sub=""
+    shift
+    case "$engine" in
+        gufo|llama.cpp) ;;
+        *) log_error "Unknown engine for _exec: $engine"; exit 2 ;;
+    esac
+    if [[ "$engine" == "llama.cpp" ]]; then
+        [[ $# -gt 0 ]] || { log_error "_exec llama.cpp needs a subcommand"; exit 2; }
+        sub="$1"; shift
+    fi
+    PROFILE_BACKEND=vulkan
+    [[ "$engine" == "gufo" ]] && PROFILE_BACKEND=rocm
+    [[ "$engine" == "llama.cpp" && "${LLM_BACKEND:-auto}" != "auto" ]] && PROFILE_BACKEND="$LLM_BACKEND"
+    llm_env_activate "$PROFILE_BACKEND"
+    local bin
+    if [[ "$engine" == "gufo" ]]; then
+        bin=$(gufo_binary)
+    else
+        case "$sub" in
+            bench) bin="$LLM_BUILD_DIR/llama-$PROFILE_BACKEND/bin/llama-bench" ;;
+            *) bin="$LLM_BUILD_DIR/llama-$PROFILE_BACKEND/bin/llama-$sub" ;;
+        esac
+    fi
+    [[ -x "$bin" ]] || { log_error "Binary not found: $bin"; exit 1; }
+    exec "$bin" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+if (( $# == 0 )); then
+    cmd_home
+    exit 0
+fi
+
+COMMAND="$1"
+if [[ "$COMMAND" == -* ]]; then
+    COMMAND=serve
+else
+    shift || true
+fi
+
+case "$COMMAND" in
+    serve)      parse_options "$@"; cmd_serve ;;
+    profile)    parse_options "$@"; LLM_DRY_RUN=1; export LLM_DRY_RUN; cmd_profile ;;
+    models|list) cmd_models ;;
+    pull|download) cmd_pull "$@" ;;
+    build)      cmd_build "$@" ;;
+    tune)       cmd_tune "$@" ;;
+    metrics)    exec "$LLM_ROOT/scripts/metrics.sh" "$@" ;;
+    doctor)     cmd_doctor ;;
+    env)        cmd_env "$@" ;;
+    _exec)      cmd_exec "$@" ;;
+    -h|--help|help) usage ;;
+    *) die_usage "Unknown command: $COMMAND" ;;
+esac

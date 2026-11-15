@@ -1,0 +1,41 @@
+# Build output
+/build/
+src/
+
+# Dependencies (downloaded ROCm SDK)
+deps/
+rocm/
+
+# Models and runtime caches
+models/
+kv-cache/
+scratch/
+benchmarks/
+ai-assisted/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and archives
+*.log
+*.tar.gz
+*.zip
+
+# CLIO
+.clio/*
+!.clio/instructions.md
+!.clio/skills/
+profiles/
+
+# Generated wrappers
+/bin/
+
+# scratch workspace
+/scratch/

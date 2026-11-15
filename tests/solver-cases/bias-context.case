@@ -1,0 +1,24 @@
+# --bias context trades the speculative draft for context headroom. The draft
+# must come off and ctx must not shrink relative to the balanced default.
+CASE_DESC="bias=context: draft dropped in exchange for context"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen3moe",
+  "general.name": "Qwen3.6-35B-A3B",
+  "qwen3moe.block_count": 48,
+  "qwen3moe.embedding_length": 4096,
+  "qwen3moe.feed_forward_length": 12288,
+  "qwen3moe.attention.head_count": 32,
+  "qwen3moe.attention.head_count_kv": 4,
+  "qwen3moe.attention.key_length": 128,
+  "qwen3moe.attention.value_length": 128,
+  "qwen3moe.expert_count": 128,
+  "qwen3moe.expert_used_count": 8
+}'
+LLM_BIAS=context
+MODEL_BYTES=$(( 39 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=true is_ssm=false is_mtp=false

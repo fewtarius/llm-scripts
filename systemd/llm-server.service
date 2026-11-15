@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 fewtarius
+[Unit]
+Description=LLM server (llm-scripts)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/llm-scripts
+
+# Defaults first, then the override file so the file wins. A missing file is
+# not an error.
+Environment=LLM_MODEL=Qwen3.6-35B-A3B-UD-Q4_K_XL
+Environment=LLM_ENGINE=llama.cpp
+Environment=LLM_PORT=9090
+Environment=LLM_HOST=127.0.0.1
+EnvironmentFile=-%h/.config/llm-scripts/server.env
+
+ExecStart=%h/llm-scripts/llm serve
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=llm-server
+
+[Install]
+WantedBy=default.target
+
+# Install:
+#   systemctl --user link %h/llm-scripts/systemd/llm-server.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now llm-server.service
+#
+# Override the model or engine without editing the unit:
+#   mkdir -p ~/.config/llm-scripts
+#   printf 'LLM_MODEL=Qwen3.8-27B-UD-Q4_K_XL\n' > ~/.config/llm-scripts/server.env
+#   systemctl --user restart llm-server.service

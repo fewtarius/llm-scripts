@@ -1,0 +1,54 @@
+# Qwen4exp on UMA with non-trivial cache-ram.
+#
+# Qwen3.8-Flash-Next is both qwen4exp (PLE offloaded to CPU) AND ssm
+# (hybrid/SSM attention, e.g. Mamba blocks). The SSM flag bypasses the
+# n_parallel=1 cache-ram early-return, so cache-ram is actively computed.
+#
+# Two bugs would silently inflate cache-ram here:
+#   1. _opt_update_cache_ram passed an extra "0" (ckpt_count) arg to
+#      _opt_system_memory, shifting strategy->load_mode in the positional
+#      params. The result: strategy="0" (no case branch matched), so the
+#      qwen4exp PLE was never subtracted from the system budget, and the
+#      function fell through to the non-UMA path (charged KV+compute+ckpt
+#      instead of just PLE).
+#   2. On UMA, VRAM+GTT IS system RAM, so used_gpu must be subtracted from
+#      sys_leftover before computing cache-ram. Without it, the solver
+#      double-counts the same physical RAM (GPU budget reserves model+KV+
+#      ckpt, then cache-ram is also allocated from the same pool).
+#
+# Both fixes together bring cache-ram from 20+ GiB down to ~3.5 GiB for
+# a 103 GiB model on a 125 GiB (128 GiB) system. Without the fix, total
+# allocation exceeds system RAM and the server hits OOM/segfault at runtime.
+CASE_DESC="qwen4exp+ssm on UMA: cache-ram accounts for PLE and GPU-resident overlap"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen4exp",
+  "general.name": "Qwen3.8-Flash-Next-UD",
+  "qwen4exp.block_count": 48,
+  "qwen4exp.embedding_length": 4096,
+  "qwen4exp.feed_forward_length": 1024,
+  "qwen4exp.attention.head_count": 40,
+  "qwen4exp.attention.head_count_kv": 1,
+  "qwen4exp.attention.key_length": 256,
+  "qwen4exp.attention.value_length": 256,
+  "qwen4exp.expert_count": 1024,
+  "qwen4exp.expert_used_count": 12,
+  "qwen4exp.shortconv.conv_kernel": 4,
+  "qwen4exp.shortconv.inner_size": 4096,
+  "qwen4exp.shortconv.group_count": 1,
+  "qwen4exp.shortconv.rms_norm_eps": 1e-06,
+  "qwen4exp.hyper_connection.num_streams": 4,
+  "qwen4exp.ngram.tokens_per_ngram": 8,
+  "qwen4exp.ngram.ngram_heads": 8,
+  "qwen4exp.ngram.ngram_embedding_length": 512,
+  "qwen4exp.ssm.d_state": 4096,
+  "qwen4exp.ssm.d_conv": 4,
+  "qwen4exp.hybrid.causal_layers": "1,2,3,5,6,7,9,10,11,13,14,15,17,18,19,21,22,23,25,26,27,29,30,31,33,34,35,37,38,39,41,42,43,45,46,47"
+}'
+SOLVER_TEST_PLE_BYTES=$(( 27 * 1073741824 ))
+MODEL_BYTES=$(( 103 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 110 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 119 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=true is_ssm=true is_mtp=false

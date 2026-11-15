@@ -1,0 +1,66 @@
+# llm-scripts
+
+> Run GGUF models on AMD APU hardware through one engine-neutral runner. It
+> detects the hardware, resolves a model file, solves a memory-aware profile,
+> renders that profile into engine argv, and runs the server. Two engines are
+> supported: llama.cpp (the SyntheticAutonomicMind fork) and gufo. No system
+> ROCm install is required - `scripts/build.sh` downloads a pinned SDK into
+> `deps/`. Vulkan (RADV) is the default llama.cpp backend on RDNA iGPUs; gufo
+> targets ROCm/HIP on gfx1151.
+
+## Why
+
+Agentic AI development on AMD APUs without network access. No API keys, no
+per-token costs, no cloud dependency. The primary target is a Strix Halo APU
+(Ryzen AI Max+ 395, Radeon 8060S, 128 GB unified memory). The detection map
+also covers the Radeon 780M (7840U), Vega 8 (5800H), and other RDNA2/RDNA3
+APUs.
+
+## Quick start
+
+```bash
+git clone --recurse-submodules https://github.com/fewtarius/llm-scripts.git
+cd llm-scripts
+./scripts/build.sh --gufo          # gufo into build/gufo/
+./scripts/build.sh --vulkan        # llama.cpp Vulkan into build/llama-vulkan/
+./llm models
+./llm serve --engine gufo Laguna-S-2.1-UD-Q4_K_XL
+```
+
+## Key features
+
+- Auto GPU/CPU detection (PCI ID, amd-smi, CPU ISA, Cezanne through Strix Halo)
+- Build orchestration for Vulkan, ROCm, and Metal, plus gufo, from one script
+- Optimistic-first solver reads GGUF metadata and detunes until the allocation
+  fits the measured GPU budget
+- One generic option vocabulary translated per engine by the adapter
+- GTT memory configuration via kernel parameters (VRAM left at firmware default)
+- Model download with split-shard assembly, size and SHA-256 verification
+- MoE expert tracking, multi-agent parallel slots, reasoning model support
+
+## Repo structure
+
+- `llm` - main entry point (serve, profile, models, pull, build, doctor, env)
+- `lib/` - hardware detection, model resolution, profile, process, env, validate
+- `solver/llama.sh` - optimistic-first llama.cpp solver
+- `solver/gufo.sh` - gufo policy solver
+- `lib/engines/` - per-engine adapter (solve, render, env, binary, readiness)
+- `scripts/build.sh` - shared build front end (ROCm SDK download, dispatch, wrappers)
+- `scripts/build/` - one build script per target (llama-rocm, llama-vulkan, llama-metal, gufo)
+- `scripts/benchmark.sh` - llama.cpp benchmark suite (cache, bench, batched)
+- `scripts/log_analyzer.py` - server log to metrics and Markdown
+- `scripts/apply-ttm-kernel-params.sh` - GTT kernel parameter configuration
+- `scripts/install-deps.sh` - system dependency installer
+- `tools/` - GGUF metadata, PLE sizing, and drafter validation readers
+- `llama.cpp/`, `gufo/` - submodules
+
+## Documentation
+
+- README.md - full documentation
+- AGENTS.md - technical reference for AI agents
+- SOLVER.md - solver algorithm and tuning details
+- `.clio/instructions.md` - collaboration methodology
+
+## License
+
+Source code: GPL-3.0-or-later. Documentation: CC-BY-NC-SA-4.0.

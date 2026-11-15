@@ -1,0 +1,25 @@
+# Very long context. Checkpoint hot-set RAM scales with ctx and is charged
+# against the system-memory budget; under-accounting it caused DeviceLost
+# crashes at runtime. Guards the SOLVER_CHECKPOINT_MIN accounting.
+CASE_DESC="262144 ctx: checkpoint storage accounted against budget"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen2",
+  "general.name": "Qwen2-14B-1M",
+  "qwen2.block_count": 48,
+  "qwen2.embedding_length": 5120,
+  "qwen2.feed_forward_length": 13824,
+  "qwen2.attention.head_count": 40,
+  "qwen2.attention.head_count_kv": 8,
+  "qwen2.attention.key_length": 128,
+  "qwen2.attention.value_length": 128,
+  "qwen2.context_length": 262144
+}'
+LLM_CTX=262144
+LLM_CTX=262144
+MODEL_BYTES=$(( 16 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 110 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=false is_mtp=false

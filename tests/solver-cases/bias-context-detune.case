@@ -1,0 +1,24 @@
+# Bias=context: phase-2 detune must preserve KV precision (f16/f16) as long
+# as possible and reduce ctx only as last resort. With a tight 63 GiB budget
+# and 82 GiB model, the solver must still end at f16/f16 (not q8_0/q8_0) with
+# reduced ctx, because context bias prioritizes KV quality over ctx length.
+CASE_DESC="82 GiB model into 63 GiB budget with --bias context: KV preserved, ctx reduced"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "llama",
+  "general.name": "Laguna-70B",
+  "llama.block_count": 80,
+  "llama.embedding_length": 8192,
+  "llama.feed_forward_length": 28672,
+  "llama.attention.head_count": 64,
+  "llama.attention.head_count_kv": 8,
+  "llama.attention.key_length": 128,
+  "llama.attention.value_length": 128
+}'
+MODEL_BYTES=$(( 82 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 100 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=false is_mtp=false
+LLM_BIAS=context

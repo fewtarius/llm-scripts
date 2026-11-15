@@ -1,0 +1,35 @@
+# qwen4exp carries a large n-gram PLE embedding table that is always offloaded
+# to CPU. Sizing it from GGUF metadata rather than a percentage heuristic is
+# what keeps the solver from detuning into a configuration that OOMs: an
+# over-estimate starves the GPU profile, an under-estimate (or zero) makes the
+# solver think the whole model must sit on the GPU.
+CASE_DESC="qwen4exp: PLE sized from metadata and offloaded from GPU budget"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "qwen4exp",
+  "general.name": "Qwen3-Next-80B",
+  "qwen4exp.block_count": 48,
+  "qwen4exp.embedding_length": 2048,
+  "qwen4exp.feed_forward_length": 512,
+  "qwen4exp.attention.head_count": 16,
+  "qwen4exp.attention.head_count_kv": 2,
+  "qwen4exp.attention.key_length": 256,
+  "qwen4exp.attention.value_length": 256,
+  "qwen4exp.expert_count": 512,
+  "qwen4exp.expert_used_count": 10,
+  "qwen4exp.shortconv.conv_kernel": 4,
+  "qwen4exp.shortconv.inner_size": 2048,
+  "qwen4exp.shortconv.group_count": 1,
+  "qwen4exp.shortconv.rms_norm_eps": 1e-06,
+  "qwen4exp.hyper_connection.num_streams": 4,
+  "qwen4exp.ngram.tokens_per_ngram": 8,
+  "qwen4exp.ngram.ngram_heads": 8,
+  "qwen4exp.ngram.ngram_embedding_length": 512
+}'
+SOLVER_TEST_PLE_BYTES=$(( 26 * 1073741824 ))
+MODEL_BYTES=$(( 80 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 100 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=true is_ssm=false is_mtp=false

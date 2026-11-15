@@ -1,0 +1,22 @@
+# Model nearly fills the GPU budget. Phase 2 must detune rather than emit a
+# profile that crashes with vk::DeviceLostError at load. Guards the memory
+# estimation work from 20c000d.
+CASE_DESC="82 GiB model into 63 GiB budget: phase-2 detune, not a crash"
+SOLVER_TEST_GGUF_JSON='{
+  "general.architecture": "llama",
+  "general.name": "Laguna-70B",
+  "llama.block_count": 80,
+  "llama.embedding_length": 8192,
+  "llama.feed_forward_length": 28672,
+  "llama.attention.head_count": 64,
+  "llama.attention.head_count_kv": 8,
+  "llama.attention.key_length": 128,
+  "llama.attention.value_length": 128
+}'
+MODEL_BYTES=$(( 82 * 1073741824 ))
+SOLVER_GPU_BUDGET_BYTES=$(( 63 * 1073741824 ))
+SOLVER_TOTAL_MEMORY_BYTES=$(( 128 * 1073741824 ))
+SOLVER_AVAILABLE_MEMORY_BYTES=$(( 100 * 1073741824 ))
+SOLVER_IS_UMA_OVERRIDE=1
+SYS_TIER=halo
+is_moe=false is_ssm=false is_mtp=false
