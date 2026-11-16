@@ -1,4 +1,5 @@
 a1a2433334ac61a526c6bae2f58f6bbc9b525f5a9e008e76a1a48d07f64f0703  rocm_sdk_core-10.1.0-py3-none-linux_x86_64.whl
 05ae5a21df8909c37e692dd74477ce58b083a740be8b3d857b43ab0808ef4a1a  rocm_sdk_devel-10.1.0-py3-none-linux_x86_64.whl
+5e16f96cba40ec56cf2f6080e2e94f70c93f6875594acf5c5a536b8206e31001  rocm_sdk_device_gfx1103-10.1.0-py3-none-linux_x86_64.whl
 e4e4d9b9a5020d0b971aec956f024514ced3ba80857aad7c42ef57bee9ebba5f  rocm_sdk_device_gfx1151-10.1.0-py3-none-linux_x86_64.whl
 ffb36d5e1d97e96c191052a10c39a1a7a4ddb4da4a88d3166ab4bf7bfdb94cf6  rocm_sdk_libraries-10.1.0-py3-none-linux_x86_64.whl
